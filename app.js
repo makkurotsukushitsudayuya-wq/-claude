@@ -6,19 +6,32 @@
  * Apps Script Webアプリへの fetch は、プリフライト(OPTIONS)を避けるため
  * POSTは Content-Type: text/plain で送る(GAS側は JSON.parse(e.postData.contents) で読む)。
  */
-
+ 
 const cfg = window.APP_CONFIG;
-const todayStr = () => new Date().toISOString().slice(0, 10);
-
+ 
+// タブレットのローカル時刻の年月日をそのまま 'YYYY-MM-DD' にする。
+// toISOString()はUTCに変換されてしまい、日本時間の深夜(0時〜9時前)に
+// 前日の日付になってしまう不具合があるため使わない。
+const todayStr = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+ 
+const WEEKDAY_JA_DISPLAY = ['日', '月', '火', '水', '木', '金', '土'];
+const weekdayLabelForDisplay_ = () => WEEKDAY_JA_DISPLAY[new Date().getDay()] + '曜日';
+ 
 let state = {
   staffList: [],
   groomingItems: [],
   attendance: { name: null, shift: null, position: null, checks: {} },
   cleaning: { staffName: null, position: null, spots: [] },
 };
-
+ 
 // ---------- API呼び出し ----------
-
+ 
 async function apiGet(action, params = {}) {
   const url = new URL(cfg.GAS_WEB_APP_URL);
   url.searchParams.set('action', action);
@@ -31,7 +44,7 @@ async function apiGet(action, params = {}) {
   if (!json.ok) throw new Error(json.error || 'APIエラー');
   return json.data;
 }
-
+ 
 async function apiPost(action, body = {}) {
   const res = await fetch(cfg.GAS_WEB_APP_URL, {
     method: 'POST',
@@ -42,14 +55,14 @@ async function apiPost(action, body = {}) {
   if (!json.ok) throw new Error(json.error || 'APIエラー');
   return json.data;
 }
-
+ 
 // ---------- 画面切り替え ----------
-
+ 
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach((el) => el.classList.remove('active'));
   document.getElementById(id).classList.add('active');
 }
-
+ 
 function switchTab(tab) {
   document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   if (tab === 'attendance') {
@@ -60,7 +73,7 @@ function switchTab(tab) {
     showScreen('screen-cleaning-staff-select');
   }
 }
-
+ 
 function toast(msg, isError = false) {
   const el = document.getElementById('toast');
   el.textContent = msg;
@@ -68,13 +81,13 @@ function toast(msg, isError = false) {
   el.classList.add('show');
   setTimeout(() => el.classList.remove('show'), 2400);
 }
-
+ 
 // ---------- 出勤確認フロー ----------
-
+ 
 function resetAttendanceFlow() {
   state.attendance = { name: null, shift: null, position: null, checks: {} };
 }
-
+ 
 async function loadStaffList() {
   const grid = document.getElementById('staff-grid');
   grid.innerHTML = '<p class="muted">読み込み中...</p>';
@@ -95,7 +108,7 @@ async function loadStaffList() {
     grid.innerHTML = `<p class="error-text">読み込み失敗: ${e.message}</p>`;
   }
 }
-
+ 
 async function onStaffChosen(staff) {
   state.attendance.name = staff.name;
   state.attendance.defaultPosition = staff.defaultPosition;
@@ -128,7 +141,7 @@ async function onStaffChosen(staff) {
       <button class="secondary" onclick="showScreen('screen-staff-select')">戻る</button>`;
   }
 }
-
+ 
 function proceedToPosition(shiftCategory) {
   state.attendance.shiftCategory = shiftCategory;
   const grid = document.getElementById('position-grid');
@@ -147,7 +160,7 @@ function proceedToPosition(shiftCategory) {
   state.attendance.position = state.attendance.defaultPosition || null;
   showScreen('screen-position-select');
 }
-
+ 
 async function openGroomingModal() {
   if (!state.attendance.position) {
     toast('ポジションを選択してください', true);
@@ -177,17 +190,17 @@ async function openGroomingModal() {
   updateGroomingConfirmButton();
   document.getElementById('grooming-modal').classList.add('active');
 }
-
+ 
 function updateGroomingConfirmButton() {
   const allChecked = state.groomingItems.length > 0
     && state.groomingItems.every((item) => state.attendance.checks[item.label]);
   document.getElementById('grooming-confirm-btn').disabled = !allChecked;
 }
-
+ 
 function closeGroomingModal() {
   document.getElementById('grooming-modal').classList.remove('active');
 }
-
+ 
 async function confirmCheckIn() {
   try {
     await apiPost('checkIn', {
@@ -205,13 +218,13 @@ async function confirmCheckIn() {
     toast('出勤記録に失敗しました: ' + e.message, true);
   }
 }
-
+ 
 // ---------- 掃除進捗フロー ----------
-
+ 
 function resetCleaningFlow() {
   state.cleaning = { staffName: null, position: null, spots: [] };
 }
-
+ 
 function renderCleaningStaffGrid() {
   const grid = document.getElementById('cleaning-staff-grid');
   grid.innerHTML = '';
@@ -226,7 +239,7 @@ function renderCleaningStaffGrid() {
     grid.appendChild(btn);
   });
 }
-
+ 
 function renderCleaningPositionGrid() {
   const grid = document.getElementById('cleaning-position-grid');
   grid.innerHTML = '';
@@ -241,7 +254,7 @@ function renderCleaningPositionGrid() {
     grid.appendChild(btn);
   });
 }
-
+ 
 async function loadCleaningSpots() {
   showScreen('screen-cleaning-list');
   const list = document.getElementById('cleaning-spot-list');
@@ -255,11 +268,12 @@ async function loadCleaningSpots() {
     list.innerHTML = `<p class="error-text">読み込み失敗: ${e.message}</p>`;
   }
 }
-
+ 
 function renderCleaningSpots() {
   const list = document.getElementById('cleaning-spot-list');
   if (state.cleaning.spots.length === 0) {
-    list.innerHTML = '<p class="muted">このポジションの掃除箇所マスタが未登録です。スプレッドシートに登録してください。</p>';
+    list.innerHTML = '<p class="muted">今日(' + weekdayLabelForDisplay_() + ')担当の掃除箇所が見つかりませんでした。'
+      + '「掃除箇所マスタ」シートで、このポジションの行の「曜日」列が空欄(毎日共通)か、今日の曜日になっているか確認してください。</p>';
     return;
   }
   list.innerHTML = '';
@@ -277,7 +291,7 @@ function renderCleaningSpots() {
     list.appendChild(row);
   });
 }
-
+ 
 async function toggleSpot(spot) {
   try {
     if (spot.done) {
@@ -294,9 +308,9 @@ async function toggleSpot(spot) {
     toast('更新に失敗しました: ' + e.message, true);
   }
 }
-
+ 
 // ---------- 初期化 ----------
-
+ 
 window.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('nav.tabs button').forEach((b) => {
     b.addEventListener('click', () => switchTab(b.dataset.tab));
@@ -304,17 +318,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('grooming-cancel-btn').onclick = closeGroomingModal;
   document.getElementById('grooming-confirm-btn').onclick = confirmCheckIn;
   document.getElementById('position-next-btn').onclick = openGroomingModal;
-
+ 
   await loadStaffList();
   renderCleaningStaffGrid();
   renderCleaningPositionGrid();
   switchTab('attendance');
-
+ 
   if (cfg.GAS_WEB_APP_URL.includes('XXXXXXXXXXXXXXXX')) {
     toast('config.js の GAS_WEB_APP_URL / SHARED_SECRET を設定してください', true);
   }
-
+ 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 });
+ 
