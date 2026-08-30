@@ -1,0 +1,10 @@
+{
+  "name": "縁乃助 出勤確認・掃除進捗",
+  "short_name": "縁乃助",
+  "start_url": "./index.html",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#f4f1ea",
+  "theme_color": "#b3541e",
+  "icons": []
+}
