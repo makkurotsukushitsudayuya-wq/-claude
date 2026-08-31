@@ -23,6 +23,23 @@ const todayStr = () => {
 const WEEKDAY_JA_DISPLAY = ['日', '月', '火', '水', '木', '金', '土'];
 const weekdayLabelForDisplay_ = () => WEEKDAY_JA_DISPLAY[new Date().getDay()] + '曜日';
  
+// シフト開始の何分前からスタッフ選択ボタンを表示するか。調整したい場合はここを変える。
+const UPCOMING_WINDOW_MINUTES = 5;
+ 
+const currentMinutes_ = () => {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+};
+ 
+// シフトAPIが返す timeRange('10:15-15:00'等)の先頭の 'HH:MM' を分に変換する。
+// '休み' 'ヘルプ:店舗名' '会議' など時間として読み取れない自由記述は null を返す
+// (=出勤ボタンの対象外になる)。
+function parseStartMinutes_(timeRange) {
+  const m = String(timeRange || '').match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+}
+ 
 let state = {
   staffList: [],
   groomingItems: [],
@@ -67,7 +84,7 @@ function switchTab(tab) {
   document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   if (tab === 'attendance') {
     resetAttendanceFlow();
-    showScreen('screen-staff-select');
+    backToStaffSelect();
   } else {
     resetCleaningFlow();
     showScreen('screen-cleaning-staff-select');
@@ -89,24 +106,87 @@ function resetAttendanceFlow() {
 }
  
 async function loadStaffList() {
-  const grid = document.getElementById('staff-grid');
-  grid.innerHTML = '<p class="muted">読み込み中...</p>';
   try {
     state.staffList = await apiGet('staffList');
+  } catch (e) {
+    toast('スタッフ一覧の読み込みに失敗しました: ' + e.message, true);
+  }
+}
+ 
+let staffSelectPollTimer = null;
+ 
+function startStaffSelectPolling() {
+  if (staffSelectPollTimer) return;
+  // シフト開始が近づいた瞬間にボタンが出てくるように、タブレットを置きっぱなしでも
+  // 定期的に(30秒おきに)出勤確認の画面を見ているときだけ自動で再チェックする。
+  staffSelectPollTimer = setInterval(() => {
+    const screen = document.getElementById('screen-staff-select');
+    if (screen && screen.classList.contains('active')) {
+      refreshStaffSelectScreen();
+    }
+  }, 30000);
+}
+ 
+/**
+ * 「今まさに出勤時刻が近い(shift開始のUPCOMING_WINDOW_MINUTES分前を過ぎた)、
+ * かつ今日まだ出勤確定していない」スタッフだけをボタンとして表示する。
+ * 複数人が同時に該当すれば、その全員分のボタンが並ぶ。
+ */
+async function refreshStaffSelectScreen() {
+  const grid = document.getElementById('staff-grid');
+  if (state.staffList.length === 0) {
+    await loadStaffList();
+  }
+  if (state.staffList.length === 0) {
+    grid.innerHTML = '<p class="muted">スタッフ・ポジションマスタが空です。スプレッドシートに登録してください。</p>';
+    return;
+  }
+  try {
+    const [shifts, checkedInNames] = await Promise.all([
+      apiGet('todayShift', { date: todayStr() }),
+      apiGet('todayCheckedIn', { date: todayStr() }),
+    ]);
+    const checkedInSet = new Set(checkedInNames);
+    const staffByName = {};
+    state.staffList.forEach((s) => { staffByName[s.name] = s; });
+ 
+    // 同じ人が複数区分(昼・夜など)を持つ場合は、一番早い開始時刻を採用する
+    const earliestStartByName = {};
+    shifts.forEach((row) => {
+      const startMin = parseStartMinutes_(row.timeRange);
+      if (startMin === null) return;
+      if (!(row.name in earliestStartByName) || startMin < earliestStartByName[row.name]) {
+        earliestStartByName[row.name] = startMin;
+      }
+    });
+ 
+    const now = currentMinutes_();
+    const upcomingNames = Object.keys(earliestStartByName)
+      .filter((name) => !checkedInSet.has(name))
+      .filter((name) => earliestStartByName[name] - now <= UPCOMING_WINDOW_MINUTES)
+      .sort((a, b) => earliestStartByName[a] - earliestStartByName[b]);
+ 
     grid.innerHTML = '';
-    state.staffList.forEach((s) => {
+    if (upcomingNames.length === 0) {
+      grid.innerHTML = `<p class="muted">現在、出勤予定時刻が近いスタッフはいません(シフト開始の${UPCOMING_WINDOW_MINUTES}分前になると、ここにボタンが表示されます)。</p>`;
+      return;
+    }
+    upcomingNames.forEach((name) => {
+      const staffInfo = staffByName[name] || { name, defaultPosition: '' };
       const btn = document.createElement('button');
       btn.className = 'big-btn';
-      btn.textContent = s.name;
-      btn.onclick = () => onStaffChosen(s);
+      btn.textContent = name;
+      btn.onclick = () => onStaffChosen(staffInfo);
       grid.appendChild(btn);
     });
-    if (state.staffList.length === 0) {
-      grid.innerHTML = '<p class="muted">スタッフ・ポジションマスタが空です。スプレッドシートに登録してください。</p>';
-    }
   } catch (e) {
     grid.innerHTML = `<p class="error-text">読み込み失敗: ${e.message}</p>`;
   }
+}
+ 
+function backToStaffSelect() {
+  showScreen('screen-staff-select');
+  refreshStaffSelectScreen();
 }
  
 async function onStaffChosen(staff) {
@@ -122,7 +202,7 @@ async function onStaffChosen(staff) {
         <h2>${staff.name} さん</h2>
         <p class="error-text">本日のシフトが見つかりませんでした。シフト表をご確認のうえ、必要であれば責任者にご連絡ください。</p>
         <div class="row-actions">
-          <button class="secondary" onclick="showScreen('screen-staff-select')">戻る</button>
+          <button class="secondary" onclick="backToStaffSelect()">戻る</button>
           <button class="primary" onclick="proceedToPosition(null)">それでも出勤する</button>
         </div>`;
     } else {
@@ -132,13 +212,13 @@ async function onStaffChosen(staff) {
         <h2>${staff.name} さん、出勤しますか?</h2>
         <p class="pill">本日のシフト: ${lines}</p>
         <div class="row-actions">
-          <button class="secondary" onclick="showScreen('screen-staff-select')">いいえ</button>
+          <button class="secondary" onclick="backToStaffSelect()">いいえ</button>
           <button class="primary" onclick="proceedToPosition('${shifts[0].category}')">はい</button>
         </div>`;
     }
   } catch (e) {
     box.innerHTML = `<p class="error-text">シフト取得に失敗しました: ${e.message}</p>
-      <button class="secondary" onclick="showScreen('screen-staff-select')">戻る</button>`;
+      <button class="secondary" onclick="backToStaffSelect()">戻る</button>`;
   }
 }
  
@@ -213,7 +293,7 @@ async function confirmCheckIn() {
     closeGroomingModal();
     toast(`${state.attendance.name} さん、出勤を記録しました`);
     resetAttendanceFlow();
-    showScreen('screen-staff-select');
+    backToStaffSelect();
   } catch (e) {
     toast('出勤記録に失敗しました: ' + e.message, true);
   }
@@ -323,6 +403,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   renderCleaningStaffGrid();
   renderCleaningPositionGrid();
   switchTab('attendance');
+  startStaffSelectPolling();
  
   if (cfg.GAS_WEB_APP_URL.includes('XXXXXXXXXXXXXXXX')) {
     toast('config.js の GAS_WEB_APP_URL / SHARED_SECRET を設定してください', true);
@@ -333,3 +414,4 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 });
  
+
