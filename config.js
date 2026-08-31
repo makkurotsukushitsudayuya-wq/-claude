@@ -5,4 +5,7 @@ window.APP_CONFIG = {
   // Code.gs の SHARED_SECRET スクリプトプロパティと同じ値にする
   SHARED_SECRET: 'Z6GSrjrXXshm2VYk5cBf1vB5JJSz7V1g',
   POSITIONS: ['ホール', 'サブ', '麺場'],
+  // 掃除進捗管理タブに表示するポジション(この順番で並ぶ)。
+  // 麺場の掃除箇所を追加する時は、ここに '麺場' を足すだけでよい。
+  CLEANING_POSITIONS: ['ホール', 'サブ'],
 };
