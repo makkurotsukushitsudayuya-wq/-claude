@@ -160,6 +160,32 @@ button.secondary { background: #eee5d8; color: var(--ink); }
 
 .check-item input { width: 22px; height: 22px; }
 
+.cleaning-board {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.position-column {
+  flex: 1;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.position-column h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.spot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .spot-row {
   display: flex;
   align-items: center;
