@@ -48,6 +48,10 @@ let state = {
   // その場で出勤確定した人をすぐにボタン一覧から消すための即時反映用セット。
   // サーバー側(todayCheckedIn)にも記録されるが、通信タイムラグなしで即座に消すために持っておく。
   locallyCheckedIn: { date: todayStr(), names: new Set() },
+  // 出勤確認画面で取得した本日のシフト一覧のキャッシュ。
+  // スタッフ名ボタンを押した直後にもう一度シフトAPIを叩くと、シフト管理システムへの
+  // 二重通信(体感の遅さの主な原因)が発生するため、直前の取得結果を使い回す。
+  cachedShifts: { date: null, shifts: [] },
 };
 
 function markLocallyCheckedIn_(name) {
@@ -160,11 +164,20 @@ async function refreshStaffSelectScreen() {
     grid.innerHTML = '<p class="muted">スタッフ・ポジションマスタが空です。スプレッドシートに登録してください。</p>';
     return;
   }
+  // 初回表示(タブ切り替え直後など、まだボタンが1つも無い状態)のときだけ
+  // 「読み込み中」を出す。30秒おきの自動更新のたびに出すとボタンがちらついて
+  // かえって使いづらいので、更新時は今の表示を保ったまま裏で取得する。
+  if (grid.children.length === 0) {
+    grid.innerHTML = '<p class="muted">読み込み中...</p>';
+  }
   try {
     const [shifts, checkedInNames] = await Promise.all([
       apiGet('todayShift', { date: todayStr() }),
       apiGet('todayCheckedIn', { date: todayStr() }),
     ]);
+    // シフト一覧をキャッシュしておき、直後にスタッフ名ボタンが押された時に
+    // シフトAPIへ再度アクセスしなくて済むようにする(体感速度対策)。
+    state.cachedShifts = { date: todayStr(), shifts };
     const checkedInSet = new Set([...checkedInNames, ...getLocallyCheckedInSet_()]);
     const staffByName = {};
     state.staffList.forEach((s) => { staffByName[s.name] = s; });
@@ -212,10 +225,18 @@ async function onStaffChosen(staff) {
   state.attendance.name = staff.name;
   state.attendance.defaultPosition = staff.defaultPosition;
   const box = document.getElementById('shift-confirm-box');
-  box.innerHTML = '<p class="muted">本日のシフトを確認中...</p>';
   showScreen('screen-shift-confirm');
   try {
-    const shifts = await apiGet('todayShift', { date: todayStr(), name: staff.name });
+    // 直前のスタッフ選択画面の更新で今日のシフト一覧を取得済みなら、それを使い回す
+    // (シフト管理システムへの二重通信をなくして、ボタンを押した直後の反応を速くする)。
+    // キャッシュが無い/古い場合だけ、念のため通信して取得する。
+    let shifts;
+    if (state.cachedShifts.date === todayStr()) {
+      shifts = state.cachedShifts.shifts.filter((s) => s.name === staff.name);
+    } else {
+      box.innerHTML = '<p class="muted">本日のシフトを確認中...</p>';
+      shifts = await apiGet('todayShift', { date: todayStr(), name: staff.name });
+    }
     if (shifts.length === 0) {
       box.innerHTML = `
         <h2>${staff.name} さん</h2>
@@ -325,11 +346,15 @@ async function confirmCheckIn() {
 // 掃除チェックリストをまとめて表示する。完了時の担当者はサーバー側(Code.gs)が
 // 「そのポジションに本日出勤しているスタッフ」から自動的に割り当てる。
 
-async function loadCleaningBoard() {
+async function loadCleaningBoard({ silent = false } = {}) {
   const board = document.getElementById('cleaning-board');
   const subtitle = document.getElementById('cleaning-board-subtitle');
   if (subtitle) subtitle.textContent = `本日(${weekdayLabelForDisplay_()})分。タップで完了/未完了を切り替えます。`;
-  board.innerHTML = '<p class="muted">読み込み中...</p>';
+  // silent: true のときは「読み込み中」で上書きしない(タップ直後の楽観更新の裏で
+  // サーバーの本当の状態と静かに同期するときに使う。ちらつき防止)。
+  if (!silent) {
+    board.innerHTML = '<p class="muted">読み込み中...</p>';
+  }
   try {
     const positions = cfg.CLEANING_POSITIONS || cfg.POSITIONS;
     const results = await Promise.all(
@@ -385,14 +410,26 @@ function renderCleaningBoard() {
 }
 
 async function toggleSpot(position, spot) {
+  // タップした瞬間に見た目を切り替える(楽観的更新)。サーバーへの通信を待たずに
+  // 反応するので、タップ後の「もっさり感」が無くなる。通信が失敗した場合だけ
+  // 元の表示に戻す。
+  const wasDone = spot.done;
+  spot.done = !wasDone;
+  if (spot.done && !spot.doneBy) {
+    spot.doneBy = '(確認中...)';
+  }
+  renderCleaningBoard();
   try {
-    if (spot.done) {
+    if (wasDone) {
       await apiPost('uncompleteCleaning', { date: todayStr(), position, spot: spot.spot });
     } else {
       await apiPost('completeCleaning', { date: todayStr(), position, spot: spot.spot });
     }
-    await loadCleaningBoard();
+    // 本当の担当者名(サーバー側で自動判定される)を静かに(ちらつかせずに)反映する。
+    await loadCleaningBoard({ silent: true });
   } catch (e) {
+    spot.done = wasDone;
+    renderCleaningBoard();
     toast('更新に失敗しました: ' + e.message, true);
   }
 }
