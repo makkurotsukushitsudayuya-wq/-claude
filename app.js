@@ -24,7 +24,7 @@ const WEEKDAY_JA_DISPLAY = ['日', '月', '火', '水', '木', '金', '土'];
 const weekdayLabelForDisplay_ = () => WEEKDAY_JA_DISPLAY[new Date().getDay()] + '曜日';
  
 // シフト開始の何分前からスタッフ選択ボタンを表示するか。調整したい場合はここを変える。
-const UPCOMING_WINDOW_MINUTES = 5;
+const UPCOMING_WINDOW_MINUTES = 999;
  
 const currentMinutes_ = () => {
   const d = new Date();
