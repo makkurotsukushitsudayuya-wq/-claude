@@ -6,9 +6,9 @@
  * Apps Script Webアプリへの fetch は、プリフライト(OPTIONS)を避けるため
  * POSTは Content-Type: text/plain で送る(GAS側は JSON.parse(e.postData.contents) で読む)。
  */
- 
+
 const cfg = window.APP_CONFIG;
- 
+
 // タブレットのローカル時刻の年月日をそのまま 'YYYY-MM-DD' にする。
 // toISOString()はUTCに変換されてしまい、日本時間の深夜(0時〜9時前)に
 // 前日の日付になってしまう不具合があるため使わない。
@@ -19,18 +19,18 @@ const todayStr = () => {
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 };
- 
+
 const WEEKDAY_JA_DISPLAY = ['日', '月', '火', '水', '木', '金', '土'];
 const weekdayLabelForDisplay_ = () => WEEKDAY_JA_DISPLAY[new Date().getDay()] + '曜日';
- 
+
 // シフト開始の何分前からスタッフ選択ボタンを表示するか。調整したい場合はここを変える。
-const UPCOMING_WINDOW_MINUTES = 999;
- 
+const UPCOMING_WINDOW_MINUTES = 5;
+
 const currentMinutes_ = () => {
   const d = new Date();
   return d.getHours() * 60 + d.getMinutes();
 };
- 
+
 // シフトAPIが返す timeRange('10:15-15:00'等)の先頭の 'HH:MM' を分に変換する。
 // '休み' 'ヘルプ:店舗名' '会議' など時間として読み取れない自由記述は null を返す
 // (=出勤ボタンの対象外になる)。
@@ -39,16 +39,35 @@ function parseStartMinutes_(timeRange) {
   if (!m) return null;
   return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
 }
- 
+
 let state = {
   staffList: [],
   groomingItems: [],
   attendance: { name: null, shift: null, position: null, checks: {} },
-  cleaning: { staffName: null, position: null, spots: [] },
+  cleaning: { data: {} },
+  // その場で出勤確定した人をすぐにボタン一覧から消すための即時反映用セット。
+  // サーバー側(todayCheckedIn)にも記録されるが、通信タイムラグなしで即座に消すために持っておく。
+  locallyCheckedIn: { date: todayStr(), names: new Set() },
 };
- 
+
+function markLocallyCheckedIn_(name) {
+  const today = todayStr();
+  if (state.locallyCheckedIn.date !== today) {
+    state.locallyCheckedIn = { date: today, names: new Set() };
+  }
+  state.locallyCheckedIn.names.add(name);
+}
+
+function getLocallyCheckedInSet_() {
+  const today = todayStr();
+  if (state.locallyCheckedIn.date !== today) {
+    state.locallyCheckedIn = { date: today, names: new Set() };
+  }
+  return state.locallyCheckedIn.names;
+}
+
 // ---------- API呼び出し ----------
- 
+
 async function apiGet(action, params = {}) {
   const url = new URL(cfg.GAS_WEB_APP_URL);
   url.searchParams.set('action', action);
@@ -61,7 +80,7 @@ async function apiGet(action, params = {}) {
   if (!json.ok) throw new Error(json.error || 'APIエラー');
   return json.data;
 }
- 
+
 async function apiPost(action, body = {}) {
   const res = await fetch(cfg.GAS_WEB_APP_URL, {
     method: 'POST',
@@ -72,25 +91,25 @@ async function apiPost(action, body = {}) {
   if (!json.ok) throw new Error(json.error || 'APIエラー');
   return json.data;
 }
- 
+
 // ---------- 画面切り替え ----------
- 
+
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach((el) => el.classList.remove('active'));
   document.getElementById(id).classList.add('active');
 }
- 
+
 function switchTab(tab) {
   document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   if (tab === 'attendance') {
     resetAttendanceFlow();
     backToStaffSelect();
   } else {
-    resetCleaningFlow();
-    showScreen('screen-cleaning-staff-select');
+    showScreen('screen-cleaning-board');
+    loadCleaningBoard();
   }
 }
- 
+
 function toast(msg, isError = false) {
   const el = document.getElementById('toast');
   el.textContent = msg;
@@ -98,13 +117,13 @@ function toast(msg, isError = false) {
   el.classList.add('show');
   setTimeout(() => el.classList.remove('show'), 2400);
 }
- 
+
 // ---------- 出勤確認フロー ----------
- 
+
 function resetAttendanceFlow() {
   state.attendance = { name: null, shift: null, position: null, checks: {} };
 }
- 
+
 async function loadStaffList() {
   try {
     state.staffList = await apiGet('staffList');
@@ -112,9 +131,9 @@ async function loadStaffList() {
     toast('スタッフ一覧の読み込みに失敗しました: ' + e.message, true);
   }
 }
- 
+
 let staffSelectPollTimer = null;
- 
+
 function startStaffSelectPolling() {
   if (staffSelectPollTimer) return;
   // シフト開始が近づいた瞬間にボタンが出てくるように、タブレットを置きっぱなしでも
@@ -126,7 +145,7 @@ function startStaffSelectPolling() {
     }
   }, 30000);
 }
- 
+
 /**
  * 「今まさに出勤時刻が近い(shift開始のUPCOMING_WINDOW_MINUTES分前を過ぎた)、
  * かつ今日まだ出勤確定していない」スタッフだけをボタンとして表示する。
@@ -146,10 +165,10 @@ async function refreshStaffSelectScreen() {
       apiGet('todayShift', { date: todayStr() }),
       apiGet('todayCheckedIn', { date: todayStr() }),
     ]);
-    const checkedInSet = new Set(checkedInNames);
+    const checkedInSet = new Set([...checkedInNames, ...getLocallyCheckedInSet_()]);
     const staffByName = {};
     state.staffList.forEach((s) => { staffByName[s.name] = s; });
- 
+
     // 同じ人が複数区分(昼・夜など)を持つ場合は、一番早い開始時刻を採用する
     const earliestStartByName = {};
     shifts.forEach((row) => {
@@ -159,13 +178,13 @@ async function refreshStaffSelectScreen() {
         earliestStartByName[row.name] = startMin;
       }
     });
- 
+
     const now = currentMinutes_();
     const upcomingNames = Object.keys(earliestStartByName)
       .filter((name) => !checkedInSet.has(name))
       .filter((name) => earliestStartByName[name] - now <= UPCOMING_WINDOW_MINUTES)
       .sort((a, b) => earliestStartByName[a] - earliestStartByName[b]);
- 
+
     grid.innerHTML = '';
     if (upcomingNames.length === 0) {
       grid.innerHTML = `<p class="muted">現在、出勤予定時刻が近いスタッフはいません(シフト開始の${UPCOMING_WINDOW_MINUTES}分前になると、ここにボタンが表示されます)。</p>`;
@@ -183,12 +202,12 @@ async function refreshStaffSelectScreen() {
     grid.innerHTML = `<p class="error-text">読み込み失敗: ${e.message}</p>`;
   }
 }
- 
+
 function backToStaffSelect() {
   showScreen('screen-staff-select');
   refreshStaffSelectScreen();
 }
- 
+
 async function onStaffChosen(staff) {
   state.attendance.name = staff.name;
   state.attendance.defaultPosition = staff.defaultPosition;
@@ -221,7 +240,7 @@ async function onStaffChosen(staff) {
       <button class="secondary" onclick="backToStaffSelect()">戻る</button>`;
   }
 }
- 
+
 function proceedToPosition(shiftCategory) {
   state.attendance.shiftCategory = shiftCategory;
   const grid = document.getElementById('position-grid');
@@ -240,7 +259,7 @@ function proceedToPosition(shiftCategory) {
   state.attendance.position = state.attendance.defaultPosition || null;
   showScreen('screen-position-select');
 }
- 
+
 async function openGroomingModal() {
   if (!state.attendance.position) {
     toast('ポジションを選択してください', true);
@@ -270,17 +289,17 @@ async function openGroomingModal() {
   updateGroomingConfirmButton();
   document.getElementById('grooming-modal').classList.add('active');
 }
- 
+
 function updateGroomingConfirmButton() {
   const allChecked = state.groomingItems.length > 0
     && state.groomingItems.every((item) => state.attendance.checks[item.label]);
   document.getElementById('grooming-confirm-btn').disabled = !allChecked;
 }
- 
+
 function closeGroomingModal() {
   document.getElementById('grooming-modal').classList.remove('active');
 }
- 
+
 async function confirmCheckIn() {
   try {
     await apiPost('checkIn', {
@@ -291,106 +310,95 @@ async function confirmCheckIn() {
       groomingChecks: state.attendance.checks,
     });
     closeGroomingModal();
+    markLocallyCheckedIn_(state.attendance.name);
     toast(`${state.attendance.name} さん、出勤を記録しました`);
     resetAttendanceFlow();
-    backToStaffSelect();
+    // 出勤確認が終わったら、そのまま掃除進捗管理タブに自動で切り替える。
+    switchTab('cleaning');
   } catch (e) {
     toast('出勤記録に失敗しました: ' + e.message, true);
   }
 }
- 
+
 // ---------- 掃除進捗フロー ----------
- 
-function resetCleaningFlow() {
-  state.cleaning = { staffName: null, position: null, spots: [] };
-}
- 
-function renderCleaningStaffGrid() {
-  const grid = document.getElementById('cleaning-staff-grid');
-  grid.innerHTML = '';
-  (state.staffList.length ? state.staffList : []).forEach((s) => {
-    const btn = document.createElement('button');
-    btn.className = 'big-btn';
-    btn.textContent = s.name;
-    btn.onclick = () => {
-      state.cleaning.staffName = s.name;
-      showScreen('screen-cleaning-position-select');
-    };
-    grid.appendChild(btn);
-  });
-}
- 
-function renderCleaningPositionGrid() {
-  const grid = document.getElementById('cleaning-position-grid');
-  grid.innerHTML = '';
-  cfg.POSITIONS.forEach((p) => {
-    const btn = document.createElement('button');
-    btn.className = 'big-btn';
-    btn.textContent = p;
-    btn.onclick = () => {
-      state.cleaning.position = p;
-      loadCleaningSpots();
-    };
-    grid.appendChild(btn);
-  });
-}
- 
-async function loadCleaningSpots() {
-  showScreen('screen-cleaning-list');
-  const list = document.getElementById('cleaning-spot-list');
-  document.getElementById('cleaning-list-title').textContent =
-    `${state.cleaning.position} の掃除箇所(${state.cleaning.staffName} さん)`;
-  list.innerHTML = '<p class="muted">読み込み中...</p>';
+// 「誰が」「どのポジション」を選ぶ画面は無くし、本日分のポジションごとの
+// 掃除チェックリストをまとめて表示する。完了時の担当者はサーバー側(Code.gs)が
+// 「そのポジションに本日出勤しているスタッフ」から自動的に割り当てる。
+
+async function loadCleaningBoard() {
+  const board = document.getElementById('cleaning-board');
+  const subtitle = document.getElementById('cleaning-board-subtitle');
+  if (subtitle) subtitle.textContent = `本日(${weekdayLabelForDisplay_()})分。タップで完了/未完了を切り替えます。`;
+  board.innerHTML = '<p class="muted">読み込み中...</p>';
   try {
-    state.cleaning.spots = await apiGet('cleaningList', { position: state.cleaning.position, date: todayStr() });
-    renderCleaningSpots();
+    const positions = cfg.CLEANING_POSITIONS || cfg.POSITIONS;
+    const results = await Promise.all(
+      positions.map((p) => apiGet('cleaningList', { position: p, date: todayStr() }))
+    );
+    state.cleaning.data = {};
+    positions.forEach((p, i) => { state.cleaning.data[p] = results[i]; });
+    renderCleaningBoard();
   } catch (e) {
-    list.innerHTML = `<p class="error-text">読み込み失敗: ${e.message}</p>`;
+    board.innerHTML = `<p class="error-text">読み込み失敗: ${e.message}</p>`;
   }
 }
- 
-function renderCleaningSpots() {
-  const list = document.getElementById('cleaning-spot-list');
-  if (state.cleaning.spots.length === 0) {
-    list.innerHTML = '<p class="muted">今日(' + weekdayLabelForDisplay_() + ')担当の掃除箇所が見つかりませんでした。'
-      + '「掃除箇所マスタ」シートで、このポジションの行の「曜日」列が空欄(毎日共通)か、今日の曜日になっているか確認してください。</p>';
-    return;
-  }
-  list.innerHTML = '';
-  state.cleaning.spots.forEach((spot) => {
-    const row = document.createElement('div');
-    row.className = 'spot-row' + (spot.done ? ' done' : '');
-    row.innerHTML = `
-      <div>
-        <div>${spot.spot}</div>
-        ${spot.done ? `<div class="spot-meta">${spot.doneBy} が完了</div>` : ''}
-      </div>
-      <span class="pill ${spot.done ? 'good' : ''}">${spot.done ? '完了' : '未完了'}</span>
-    `;
-    row.onclick = () => toggleSpot(spot);
-    list.appendChild(row);
+
+function renderCleaningBoard() {
+  const board = document.getElementById('cleaning-board');
+  const positions = cfg.CLEANING_POSITIONS || cfg.POSITIONS;
+  board.innerHTML = '';
+  positions.forEach((position) => {
+    const spots = state.cleaning.data[position] || [];
+    const column = document.createElement('div');
+    column.className = 'position-column';
+
+    const heading = document.createElement('h3');
+    heading.textContent = position;
+    column.appendChild(heading);
+
+    if (spots.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'muted';
+      p.textContent = `今日(${weekdayLabelForDisplay_()})担当の掃除箇所が見つかりませんでした。`
+        + '「掃除箇所マスタ」シートで、このポジションの行の「曜日」列が空欄(毎日共通)か、今日の曜日になっているか確認してください。';
+      column.appendChild(p);
+    } else {
+      const list = document.createElement('div');
+      list.className = 'spot-list';
+      spots.forEach((spot) => {
+        const row = document.createElement('div');
+        row.className = 'spot-row' + (spot.done ? ' done' : '');
+        row.innerHTML = `
+          <div>
+            <div>${spot.spot}</div>
+            ${spot.done ? `<div class="spot-meta">${spot.doneBy} が完了</div>` : ''}
+          </div>
+          <span class="pill ${spot.done ? 'good' : ''}">${spot.done ? '完了' : '未完了'}</span>
+        `;
+        row.onclick = () => toggleSpot(position, spot);
+        list.appendChild(row);
+      });
+      column.appendChild(list);
+    }
+    board.appendChild(column);
   });
 }
- 
-async function toggleSpot(spot) {
+
+async function toggleSpot(position, spot) {
   try {
     if (spot.done) {
-      await apiPost('uncompleteCleaning', {
-        date: todayStr(), position: state.cleaning.position, spot: spot.spot,
-      });
+      await apiPost('uncompleteCleaning', { date: todayStr(), position, spot: spot.spot });
     } else {
-      await apiPost('completeCleaning', {
-        date: todayStr(), position: state.cleaning.position, spot: spot.spot, staffName: state.cleaning.staffName,
-      });
+      await apiPost('completeCleaning', { date: todayStr(), position, spot: spot.spot });
     }
-    await loadCleaningSpots();
+    await loadCleaningBoard();
   } catch (e) {
     toast('更新に失敗しました: ' + e.message, true);
   }
 }
- 
+
 // ---------- 初期化 ----------
- 
+
 window.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('nav.tabs button').forEach((b) => {
     b.addEventListener('click', () => switchTab(b.dataset.tab));
@@ -398,20 +406,16 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('grooming-cancel-btn').onclick = closeGroomingModal;
   document.getElementById('grooming-confirm-btn').onclick = confirmCheckIn;
   document.getElementById('position-next-btn').onclick = openGroomingModal;
- 
+
   await loadStaffList();
-  renderCleaningStaffGrid();
-  renderCleaningPositionGrid();
   switchTab('attendance');
   startStaffSelectPolling();
- 
+
   if (cfg.GAS_WEB_APP_URL.includes('XXXXXXXXXXXXXXXX')) {
     toast('config.js の GAS_WEB_APP_URL / SHARED_SECRET を設定してください', true);
   }
- 
+
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 });
- 
-

@@ -34,34 +34,16 @@
       <h2>ポジションを選んでください</h2>
       <div id="position-grid" class="grid-buttons"></div>
       <div class="row-actions">
-        <button class="secondary" onclick="showScreen('screen-staff-select')">戻る</button>
+        <button class="secondary" onclick="backToStaffSelect()">戻る</button>
         <button id="position-next-btn" class="primary">次へ(身だしなみチェック)</button>
       </div>
     </section>
 
-    <!-- 掃除進捗: 担当者選択 -->
-    <section id="screen-cleaning-staff-select" class="screen">
-      <h2>あなたの名前を選んでください</h2>
-      <div id="cleaning-staff-grid" class="grid-buttons"></div>
-    </section>
-
-    <!-- 掃除進捗: ポジション選択 -->
-    <section id="screen-cleaning-position-select" class="screen">
-      <h2>担当ポジションを選んでください</h2>
-      <div id="cleaning-position-grid" class="grid-buttons"></div>
-      <div class="row-actions">
-        <button class="secondary" onclick="showScreen('screen-cleaning-staff-select')">戻る</button>
-      </div>
-    </section>
-
-    <!-- 掃除進捗: 一覧 -->
-    <section id="screen-cleaning-list" class="screen">
-      <h2 id="cleaning-list-title"></h2>
-      <p class="muted">タップで完了/未完了を切り替えます。</p>
-      <div id="cleaning-spot-list" class="grid-buttons" style="display:flex; flex-direction:column; gap:10px;"></div>
-      <div class="row-actions">
-        <button class="secondary" onclick="showScreen('screen-cleaning-position-select')">ポジションを選び直す</button>
-      </div>
+    <!-- 掃除進捗管理: ポジションごとの本日のチェックリストをまとめて表示 -->
+    <section id="screen-cleaning-board" class="screen">
+      <h2>掃除進捗管理</h2>
+      <p class="muted" id="cleaning-board-subtitle"></p>
+      <div id="cleaning-board" class="cleaning-board"></div>
     </section>
   </main>
 </div>
